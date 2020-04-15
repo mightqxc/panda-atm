@@ -66,11 +66,16 @@ class AtmMaster(object):
         #             proc = multiprocessing.Process(name=some_name, target=self.launcher, args=some_args_tuple)
         #             proc.start()
         #             procList.append(proc)
-        # testing agent
+        # slow_task_analyzer agent
         parent_conn, child_conn = multiprocessing.Pipe()
-        proc = multiprocessing.Process(name='testing_agent', target=self.launcher, args=('pandaatm.atmbody.testing_agent',))
+        proc = multiprocessing.Process(name='slow_task_analyzer', target=self.launcher, args=('pandaatm.atmbody.slow_task_analyzer',))
         proc.start()
         procList.append(proc)
+        # testing agent
+        # parent_conn, child_conn = multiprocessing.Pipe()
+        # proc = multiprocessing.Process(name='testing_agent', target=self.launcher, args=('pandaatm.atmbody.testing_agent',))
+        # proc.start()
+        # procList.append(proc)
         # check initial failures
         time.sleep(5)
         for proc in procList:

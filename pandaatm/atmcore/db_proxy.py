@@ -5,6 +5,7 @@ import copy
 import logging
 import datetime
 import traceback
+import itertools
 
 import cx_Oracle
 
@@ -14,6 +15,7 @@ from pandaatm.atmcore import core_utils
 from pandacommon.pandalogger import logger_utils
 
 from pandaserver.taskbuffer import OraDBProxy
+from pandaserver.taskbuffer.JobSpec  import JobSpec
 
 # from pandajedi.jedicore.JediTaskSpec import JediTaskSpec
 # from pandajedi.jedicore.JediFileSpec import JediFileSpec
@@ -76,7 +78,7 @@ class DBProxy(OraDBProxy.DBProxy):
 
     #====================================================================
 
-    def slowTaskAttempsFilter01_ATM(self, created_since: datetime.datetime, prod_source_label: str = None, task_duration_days: int = 7) -> dict :
+    def slowTaskAttempsFilter01_ATM(self, created_since: datetime.datetime, prod_source_label: str = None, task_duration: datetime.timedelta = datetime.timedelta(hours=168)) -> dict :
         """
         First filter to get possible slow tasks
         """
@@ -92,7 +94,7 @@ class DBProxy(OraDBProxy.DBProxy):
             sqlT = (
                     "SELECT jediTaskID,creationDate "
                     "FROM ATLAS_PANDA.JEDI_Tasks "
-                    "WHERE prodSourceLabel='user' AND status IN ('done', 'finished') AND (endTime - creationDate)>:taskDuration AND creationDate>=:creationDateMin "
+                    "WHERE prodSourceLabel='user' AND status IN ('done', 'finished') AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax AND creationDate>=:creationDateMin "
                     "ORDER BY jediTaskID DESC "
                 )
             # sql to get task status log
@@ -105,7 +107,7 @@ class DBProxy(OraDBProxy.DBProxy):
             # get tasks
             varMap = dict()
             varMap[':creationDateMin'] = created_since
-            varMap[':taskDuration'] = task_duration_days
+            varMap[':taskDurationMax'] = task_duration
             self.cur.execute(sqlT + comment, varMap)
             tmpTasksRes = self.cur.fetchall()
             # loop over tasks to parse status log
@@ -115,16 +117,18 @@ class DBProxy(OraDBProxy.DBProxy):
                 self.cur.execute(sqlSL + comment, varMap)
                 tmpSLRes = self.cur.fetchall()
                 # parse status log
-                # (jediTaskID,attemptNr): {startTime, endTime, attemptDuration, finalStatus}
+                # (jediTaskID,attemptNr): {startTime, endTime, attemptDuration, finalStatus, statusList}
                 attemptNr = 1
                 toGetAttempt = True
                 for modificationTime, status in tmpSLRes:
                     if toGetAttempt:
                         taskAttempsDict[(jediTaskID, attemptNr)] = {}
                         taskAttempsDict[(jediTaskID, attemptNr)]['startTime'] = modificationTime
+                        taskAttempsDict[(jediTaskID, attemptNr)]['statusList'] = []
                         toGetAttempt = False
+                    taskAttempsDict[(jediTaskID, attemptNr)]['statusList'].append((status, modificationTime))
                     taskAttempsDict[(jediTaskID, attemptNr)]['finalStatus'] = status
-                    if status in ('finished', 'done'):
+                    if status in ('finished', 'done', 'failed', 'aborted'):
                         taskAttempsDict[(jediTaskID, attemptNr)]['endTime'] = modificationTime
                         try:
                             taskAttempsDict[(jediTaskID, attemptNr)]['attemptDuration'] = modificationTime - taskAttempsDict[(jediTaskID, attemptNr)]['startTime']
@@ -134,9 +138,9 @@ class DBProxy(OraDBProxy.DBProxy):
                         attemptNr += 1
                 # filter for return dict
                 for k, v in taskAttempsDict.items():
-                    if 'attemptDuration' in v and v['attemptDuration'] > datetime.timedelta(days=task_duration_days):
+                    if 'attemptDuration' in v and v['attemptDuration'] > task_duration:
                         retDict[k] = v
-            tmp_log.debug('done')
+            tmp_log.debug('done, got {0} slow task attempts'.format(len(retDict)))
             # return
             return retDict
         except Exception:
@@ -146,11 +150,68 @@ class DBProxy(OraDBProxy.DBProxy):
             self.dumpErrorMessage(tmp_log)
             return None
 
-    def slowTaskAttempts_ATM(self, jediTaskID: int):
+    def slowTaskJobsInAttempt_ATM(self, jediTaskID: int, attemptNr: int, attempt_start: datetime.datetime, attempt_end: datetime.datetime) -> list :
         """
-        Attemps of a slow task
+        Jobs of a slow task attempt
         """
-        comment = ' /* atmcore.db_proxy.slowTaskAttempts_ATM */'
+        comment = ' /* atmcore.db_proxy.slowTaskJobsInAttempt_ATM */'
+        method_name = self.getMethodName(comment)
+        method_name += ' < jediTaskID={0} attemptNr={1} > '.format(jediTaskID, attemptNr)
+        tmp_log = logger_utils.make_logger(base_logger, method_name=method_name)
+        tmp_log.debug('start')
+        try:
+            # sql to get archived jobs
+            sqlJA1 = (
+                    'SELECT {job_columns} '
+                    'FROM ATLAS_PANDAARCH.JOBSARCHIVED '
+                    'WHERE jediTaskID=:jediTaskID AND creationTime>=:attempt_start AND creationTime<=:attempt_end '
+                ).format(job_columns=str(JobSpec.columnNames()))
+            sqlJA2 = (
+                    'SELECT {job_columns} '
+                    'FROM ATLAS_PANDA.JOBSARCHIVED4 '
+                    'WHERE jediTaskID=:jediTaskID AND creationTime>=:attempt_start AND creationTime<=:attempt_end '
+                ).format(job_columns=str(JobSpec.columnNames()))
+            # get jobs
+            varMap = dict()
+            varMap[':jediTaskID'] = jediTaskID
+            varMap[':attempt_start'] = attempt_start
+            varMap[':attempt_end'] = attempt_end
+            self.cur.execute(sqlJA1 + comment, varMap)
+            tmpJRes1 = self.cur.fetchall()
+            self.cur.execute(sqlJA2 + comment, varMap)
+            tmpJRes2 = self.cur.fetchall()
+            tmpJRes = itertools.chain(tmpJRes1, tmpJRes2)
+            # add jobspecs in list
+            pandaidSet = set()
+            retList = []
+            for one_job in tmpJRes:
+                jobspec = JobSpec()
+                jobspec.pack(one_job)
+                pandaid = jobspec.PandaID
+                # prevent duplicate jobspec from different tables
+                if pandaid not in pandaidSet:
+                    pandaidSet.add(pandaid)
+                    retList.append(jobspec)
+            # return
+            tmp_log.debug('done, got {0} jobs'.format(len(retList)))
+            return retList
+        except Exception:
+            # roll back
+            self._rollback()
+            # error
+            self.dumpErrorMessage(tmp_log)
+            return None
+
+
+
+
+
+
+    def slowTaskFileAttempts_ATM(self, jediTaskID: int):
+        """
+        Attemps of file processing of a slow task
+        """
+        comment = ' /* atmcore.db_proxy.slowTaskFileAttempts_ATM */'
         method_name = self.getMethodName(comment)
         # method_name += " < jediTaskID={0} >".format(jediTaskID)
         tmp_log = logger_utils.make_logger(base_logger, method_name=method_name)
