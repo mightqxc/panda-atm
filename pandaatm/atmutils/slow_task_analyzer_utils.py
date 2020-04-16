@@ -175,20 +175,21 @@ def get_jobs_time_consumption_statistics(jobspec_list):
         # prepare for next loop
         previous_point = chronicle_point
     # handle after last loop
-    _status = previous_point.jobStatus
-    _pandaid = previous_point.PandaID
-    _cptype = previous_point.type
-    if _cptype == 'creationTime':
-        # job waiting in this duration
-        jobs_record_dict[_status]['wait'].add(_pandaid)
-    elif _cptype == 'startTime':
-        # job running in this duration
-        jobs_record_dict[_status]['wait'].discard(_pandaid)
-        jobs_record_dict[_status]['run'].add(_pandaid)
-    elif _cptype == 'endTime':
-        # job ended, clear from temp records
-        jobs_record_dict[_status]['wait'].discard(_pandaid)
-        jobs_record_dict[_status]['run'].discard(_pandaid)
+    if previous_point is not None:
+        _status = previous_point.jobStatus
+        _pandaid = previous_point.PandaID
+        _cptype = previous_point.type
+        if _cptype == 'creationTime':
+            # job waiting in this duration
+            jobs_record_dict[_status]['wait'].add(_pandaid)
+        elif _cptype == 'startTime':
+            # job running in this duration
+            jobs_record_dict[_status]['wait'].discard(_pandaid)
+            jobs_record_dict[_status]['run'].add(_pandaid)
+        elif _cptype == 'endTime':
+            # job ended, clear from temp records
+            jobs_record_dict[_status]['wait'].discard(_pandaid)
+            jobs_record_dict[_status]['run'].discard(_pandaid)
     # check
     n_durations = len(duration_list)
     for _status in ['finished', 'failed', 'closed', 'cancelled']:
