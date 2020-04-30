@@ -10,7 +10,7 @@ class AgentBase(object):
 
     def __init__(self, **kwargs):
         self.sleepPeriod = 300
-        self.dbProxyPool = DBProxyPool(atm_config.db.dbhost, atm_config.db.dbpasswd, nConnection=1)
+        self.dbProxyPool = DBProxyPool(atm_config.db.dbhost, atm_config.db.dbpasswd, nConnection=5)
         self.dbProxy = self.dbProxyPool.getProxy()
 
     def run(self):

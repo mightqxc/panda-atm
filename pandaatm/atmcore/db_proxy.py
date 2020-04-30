@@ -78,7 +78,7 @@ class DBProxy(OraDBProxy.DBProxy):
 
     #====================================================================
 
-    def slowTaskAttempsFilter01_ATM(self, created_since: datetime.datetime, prod_source_label: str = None, task_duration: datetime.timedelta = datetime.timedelta(hours=168)) -> dict :
+    def slowTaskAttempsFilter01_ATM(self, created_since: datetime.datetime, prod_source_label: str = 'user', task_duration: datetime.timedelta = datetime.timedelta(hours=168)) -> dict :
         """
         First filter to get possible slow tasks
         """
@@ -94,7 +94,7 @@ class DBProxy(OraDBProxy.DBProxy):
             sqlT = (
                     "SELECT jediTaskID,creationDate "
                     "FROM ATLAS_PANDA.JEDI_Tasks "
-                    "WHERE prodSourceLabel='user' AND status IN ('done', 'finished') AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax AND creationDate>=:creationDateMin "
+                    "WHERE prodSourceLabel=:prodSourceLabel AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax AND creationDate>=:creationDateMin "
                     "ORDER BY jediTaskID DESC "
                 )
             # sql to get task status log
@@ -106,6 +106,7 @@ class DBProxy(OraDBProxy.DBProxy):
                 )
             # get tasks
             varMap = dict()
+            varMap[':prodSourceLabel'] = prod_source_label
             varMap[':creationDateMin'] = created_since
             varMap[':taskDurationMax'] = task_duration
             self.cur.execute(sqlT + comment, varMap)
@@ -128,7 +129,7 @@ class DBProxy(OraDBProxy.DBProxy):
                         toGetAttempt = False
                     taskAttempsDict[(jediTaskID, attemptNr)]['statusList'].append((status, modificationTime))
                     taskAttempsDict[(jediTaskID, attemptNr)]['finalStatus'] = status
-                    if status in ('finished', 'done', 'failed', 'aborted'):
+                    if status in ('finished', 'done', 'failed', 'aborted', 'broken'):
                         taskAttempsDict[(jediTaskID, attemptNr)]['endTime'] = modificationTime
                         try:
                             taskAttempsDict[(jediTaskID, attemptNr)]['attemptDuration'] = modificationTime - taskAttempsDict[(jediTaskID, attemptNr)]['startTime']

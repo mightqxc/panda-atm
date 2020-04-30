@@ -172,13 +172,13 @@ class SlowTaskAnalyzer(AgentBase):
         result_str = '\n'.join(result_str_list)
         return result_str
 
-    def _bad_job_time_consumed_set(self, real_task_duration, jobs_time_consumption_stats_dict):
+    def _bad_job_time_consumed_set(self, task_attempt_duration, jobs_time_consumption_stats_dict):
         ret_msg_set = set()
         for status in ['finished', 'failed', 'closed', 'cancelled']:
             for dur_type in ['wait', 'run']:
                 if (status, dur_type) == ('finished', 'run'):
                     continue
-                if jobs_time_consumption_stats_dict[status][dur_type]*100/real_task_duration >= self.jobBadTimeMaxPercent:
+                if jobs_time_consumption_stats_dict[status][dur_type]*100/task_attempt_duration >= self.jobBadTimeMaxPercent:
                     msg_tag = 'Job{0}{1}Long'.format(status.capitalize(), dur_type.capitalize())
                     ret_msg_set.add(msg_tag)
         return ret_msg_set
@@ -215,12 +215,12 @@ class SlowTaskAnalyzer(AgentBase):
                 )
         return result_str
 
-    def _jobs_time_consumption_stats_display(self, real_task_duration, jobs_time_consumption_stats_dict) -> str:
+    def _jobs_time_consumption_stats_display(self, task_attempt_duration, jobs_time_consumption_stats_dict) -> str:
         # function to format one data record
         def get_data_str(data_time):
             data_str = '{duration:>13} ({percent:>2}%)'.format(
                     duration=core_utils.timedelta_parse_dict(data_time)['str_dcolon'],
-                    percent=int(data_time*100/real_task_duration),
+                    percent=int(data_time*100/task_attempt_duration),
                 )
             return data_str
         # dict result dict
@@ -306,14 +306,13 @@ class SlowTaskAnalyzer(AgentBase):
                     jobspec_list = self.dbProxy.slowTaskJobsInAttempt_ATM(jediTaskID=jediTaskID, attemptNr=attemptNr,
                                                                         attempt_start=v['startTime'], attempt_end=v['endTime'])
                     # time consumption statistics of jobs
-                    real_task_duration = v['endTime'] - v['startTime']
+                    task_attempt_duration = v['attemptDuration']
                     jobs_time_consumption_stats_dict = get_jobs_time_consumption_statistics(jobspec_list)
-                    jobful_time_ratio = jobs_time_consumption_stats_dict['total']['total'] / real_task_duration
-                    successful_run_time_ratio = jobs_time_consumption_stats_dict['finished']['run'] / real_task_duration
+                    jobful_time_ratio = jobs_time_consumption_stats_dict['total']['total'] / task_attempt_duration
+                    successful_run_time_ratio = jobs_time_consumption_stats_dict['finished']['run'] / task_attempt_duration
                     jobs_time_consumption_stats_dict['_jobful_time_ratio'] = jobful_time_ratio
                     jobs_time_consumption_stats_dict['_successful_run_time_ratio'] = successful_run_time_ratio
                     # fill new value dictionary
-                    new_v['real_task_duration'] = real_task_duration
                     new_v['jobspec_list'] = jobspec_list
                     new_v['jobs_time_consumption_stats_dict'] = jobs_time_consumption_stats_dict
                     # more criteria of slow task
@@ -336,7 +335,7 @@ class SlowTaskAnalyzer(AgentBase):
                     task_attempt_name = '{0}_{1:02}'.format(*k)
                     new_v = ret_dict[k]
                     slow_reason_set = set()
-                    real_task_duration = new_v['real_task_duration']
+                    task_attempt_duration = new_v['attemptDuration']
                     jobspec_list = new_v['jobspec_list']
                     jobs_time_consumption_stats_dict = new_v['jobs_time_consumption_stats_dict']
                     # culprit task status (stuck long)
@@ -363,12 +362,12 @@ class SlowTaskAnalyzer(AgentBase):
                         dump_file.write(dump_str)
                         tmp_log.debug(dump_str)
                     # time consumption statistics of jobs
-                    jobs_time_consumption_stats_display = self._jobs_time_consumption_stats_display(real_task_duration, jobs_time_consumption_stats_dict)
+                    jobs_time_consumption_stats_display = self._jobs_time_consumption_stats_display(task_attempt_duration, jobs_time_consumption_stats_dict)
                     dump_str = 'taskID_attempt={0} time consumption stats of jobs: \n{1}\n'.format(task_attempt_name, jobs_time_consumption_stats_display)
                     dump_file.write(dump_str)
                     tmp_log.debug(dump_str)
                     # job symptom tags according to time consumption
-                    job_slow_reason_set = self._bad_job_time_consumed_set(real_task_duration, jobs_time_consumption_stats_dict)
+                    job_slow_reason_set = self._bad_job_time_consumed_set(task_attempt_duration, jobs_time_consumption_stats_dict)
                     if not job_slow_reason_set:
                         tmp_log.debug('taskID_attempt={0} had no bad job symptom'.format(task_attempt_name))
                     else:
