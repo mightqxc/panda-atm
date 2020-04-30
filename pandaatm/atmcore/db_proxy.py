@@ -78,7 +78,13 @@ class DBProxy(OraDBProxy.DBProxy):
 
     #====================================================================
 
-    def slowTaskAttempsFilter01_ATM(self, created_since: datetime.datetime, prod_source_label: str = 'user', task_duration: datetime.timedelta = datetime.timedelta(hours=168)) -> dict :
+    def slowTaskAttempsFilter01_ATM(self,
+                                    created_since: datetime.datetime,
+                                    created_before=None,
+                                    prod_source_label: str = 'user',
+                                    gshare=None,
+                                    task_duration: datetime.timedelta = datetime.timedelta(hours=168)
+                                    ) -> dict :
         """
         First filter to get possible slow tasks
         """
@@ -94,12 +100,16 @@ class DBProxy(OraDBProxy.DBProxy):
             sqlT = (
                     "SELECT jediTaskID,creationDate "
                     "FROM ATLAS_PANDA.JEDI_Tasks "
-                    "WHERE prodSourceLabel=:prodSourceLabel AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax AND creationDate>=:creationDateMin "
+                    "WHERE prodSourceLabel=:prodSourceLabel "
+                        "AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax "
+                        "AND creationDate>=:creationDateMin "
+                        "{created_before_filter} "
+                        "{gshare_filter} "
                     "ORDER BY jediTaskID DESC "
                 )
             # sql to get task status log
             sqlSL = (
-                    'SELECT modificationTime,status '
+                    'SELECT modificationTime,status,userName '
                     'FROM ATLAS_PANDA.Tasks_StatusLog '
                     'WHERE jediTaskID=:jediTaskID '
                     'ORDER BY modificationTime '
@@ -109,6 +119,16 @@ class DBProxy(OraDBProxy.DBProxy):
             varMap[':prodSourceLabel'] = prod_source_label
             varMap[':creationDateMin'] = created_since
             varMap[':taskDurationMax'] = task_duration
+            created_before_filter = ''
+            gshare_filter = ''
+            if created_before is not None:
+                varMap[':creationDateMax'] = created_before
+                created_before_filter = 'AND creationDate<:creationDateMax'
+            if gshare is not None:
+                varMap[':gshare'] = gshare
+                gshare_filter = 'AND gshare=:gshare'
+            sqlT = sqlT.format( created_before_filter=created_before_filter,
+                                gshare_filter=gshare_filter)
             self.cur.execute(sqlT + comment, varMap)
             tmpTasksRes = self.cur.fetchall()
             # loop over tasks to parse status log
@@ -118,14 +138,15 @@ class DBProxy(OraDBProxy.DBProxy):
                 self.cur.execute(sqlSL + comment, varMap)
                 tmpSLRes = self.cur.fetchall()
                 # parse status log
-                # (jediTaskID,attemptNr): {startTime, endTime, attemptDuration, finalStatus, statusList}
+                # (jediTaskID,attemptNr): {startTime, endTime, attemptDuration, finalStatus, statusList, userName}
                 attemptNr = 1
                 toGetAttempt = True
-                for modificationTime, status in tmpSLRes:
+                for modificationTime, status, userName in tmpSLRes:
                     if toGetAttempt:
                         taskAttempsDict[(jediTaskID, attemptNr)] = {}
                         taskAttempsDict[(jediTaskID, attemptNr)]['startTime'] = modificationTime
                         taskAttempsDict[(jediTaskID, attemptNr)]['statusList'] = []
+                        taskAttempsDict[(jediTaskID, attemptNr)]['userName'] = userName
                         toGetAttempt = False
                     taskAttempsDict[(jediTaskID, attemptNr)]['statusList'].append((status, modificationTime))
                     taskAttempsDict[(jediTaskID, attemptNr)]['finalStatus'] = status
