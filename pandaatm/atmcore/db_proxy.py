@@ -98,7 +98,7 @@ class DBProxy(OraDBProxy.DBProxy):
             retDict = {}
             # sql to get tasks with the first filter
             sqlT = (
-                    "SELECT jediTaskID,creationDate "
+                    "SELECT jediTaskID,creationDate,userName "
                     "FROM ATLAS_PANDA.JEDI_Tasks "
                     "WHERE prodSourceLabel=:prodSourceLabel "
                         "AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax "
@@ -109,7 +109,7 @@ class DBProxy(OraDBProxy.DBProxy):
                 )
             # sql to get task status log
             sqlSL = (
-                    'SELECT modificationTime,status,userName '
+                    'SELECT modificationTime,status '
                     'FROM ATLAS_PANDA.Tasks_StatusLog '
                     'WHERE jediTaskID=:jediTaskID '
                     'ORDER BY modificationTime '
@@ -131,8 +131,9 @@ class DBProxy(OraDBProxy.DBProxy):
                                 gshare_filter=gshare_filter)
             self.cur.execute(sqlT + comment, varMap)
             tmpTasksRes = self.cur.fetchall()
+            tmp_log.debug('got tasks to parse')
             # loop over tasks to parse status log
-            for jediTaskID, creationDate in tmpTasksRes:
+            for jediTaskID, creationDate, userName in tmpTasksRes:
                 varMap = dict()
                 varMap[':jediTaskID'] = jediTaskID
                 self.cur.execute(sqlSL + comment, varMap)
@@ -141,7 +142,7 @@ class DBProxy(OraDBProxy.DBProxy):
                 # (jediTaskID,attemptNr): {startTime, endTime, attemptDuration, finalStatus, statusList, userName}
                 attemptNr = 1
                 toGetAttempt = True
-                for modificationTime, status, userName in tmpSLRes:
+                for modificationTime, status in tmpSLRes:
                     if toGetAttempt:
                         taskAttempsDict[(jediTaskID, attemptNr)] = {}
                         taskAttempsDict[(jediTaskID, attemptNr)]['startTime'] = modificationTime
@@ -172,7 +173,9 @@ class DBProxy(OraDBProxy.DBProxy):
             self.dumpErrorMessage(tmp_log)
             return None
 
-    def slowTaskJobsInAttempt_ATM(self, jediTaskID: int, attemptNr: int, attempt_start: datetime.datetime, attempt_end: datetime.datetime) -> list :
+    def slowTaskJobsInAttempt_ATM(self, jediTaskID: int, attemptNr: int,
+                                    attempt_start: datetime.datetime, attempt_end: datetime.datetime,
+                                    concise=False) -> list :
         """
         Jobs of a slow task attempt
         """
@@ -182,17 +185,23 @@ class DBProxy(OraDBProxy.DBProxy):
         tmp_log = logger_utils.make_logger(base_logger, method_name=method_name)
         tmp_log.debug('start')
         try:
+            if concise:
+                important_attrs = [ 'PandaID', 'jediTaskID', 'jobStatus', 'actualCoreCount',
+                                    'creationTime', 'startTime', 'endTime']
+                job_columns = ','.join(important_attrs)
+            else:
+                job_columns = str(JobSpec.columnNames())
             # sql to get archived jobs
             sqlJA1 = (
                     'SELECT {job_columns} '
                     'FROM ATLAS_PANDAARCH.JOBSARCHIVED '
                     'WHERE jediTaskID=:jediTaskID AND creationTime>=:attempt_start AND creationTime<=:attempt_end '
-                ).format(job_columns=str(JobSpec.columnNames()))
+                ).format(job_columns=job_columns)
             sqlJA2 = (
                     'SELECT {job_columns} '
                     'FROM ATLAS_PANDA.JOBSARCHIVED4 '
                     'WHERE jediTaskID=:jediTaskID AND creationTime>=:attempt_start AND creationTime<=:attempt_end '
-                ).format(job_columns=str(JobSpec.columnNames()))
+                ).format(job_columns=job_columns)
             # get jobs
             varMap = dict()
             varMap[':jediTaskID'] = jediTaskID
@@ -208,7 +217,11 @@ class DBProxy(OraDBProxy.DBProxy):
             retList = []
             for one_job in tmpJRes:
                 jobspec = JobSpec()
-                jobspec.pack(one_job)
+                if concise:
+                    for attr, value in zip(important_attrs, one_job):
+                        setattr(jobspec, attr, value)
+                else:
+                    jobspec.pack(one_job)
                 pandaid = jobspec.PandaID
                 # prevent duplicate jobspec from different tables
                 if pandaid not in pandaidSet:
