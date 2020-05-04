@@ -195,8 +195,8 @@ class DBProxy(OraDBProxy.DBProxy):
             retDict = {}
             # sql to get attempt from task status log and tasks table
             sqlSLT = (
-                    'SELECT sl.jediTaskID,sl.modificationTime,sl.status '
-                    'FROM ATLAS_PANDA.Tasks_StatusLog sl, ATLAS_PANDA.JEDI_Tasks t'
+                    'SELECT sl.jediTaskID,sl.modificationTime,sl.status,t.userName '
+                    'FROM ATLAS_PANDA.Tasks_StatusLog sl, ATLAS_PANDA.JEDI_Tasks t '
                     'WHERE sl.jediTaskID=t.jediTaskID '
                         "AND t.prodSourceLabel=:prodSourceLabel "
                         "AND t.modificationTime>=:creationDateMin "
@@ -215,7 +215,7 @@ class DBProxy(OraDBProxy.DBProxy):
                 created_before_filter = 'AND t.creationDate<:creationDateMax'
             if gshare is not None:
                 varMap[':gshare'] = gshare
-                gshare_filter = 'AND gshare=:gshare'
+                gshare_filter = 'AND t.gshare=:gshare'
             sqlSLT = sqlSLT.format( created_before_filter=created_before_filter,
                                     gshare_filter=gshare_filter)
             self.cur.execute(sqlSLT + comment, varMap)
@@ -223,7 +223,7 @@ class DBProxy(OraDBProxy.DBProxy):
             tmp_log.debug('got task status logs to parse')
             # loop over task status logs to parse task attempts
             task_attempt_record_dict = {}
-            for jediTaskID, modificationTime, status in tmpTasksRes:
+            for jediTaskID, modificationTime, status, userName in tmpTasksRes:
                 if jediTaskID not in task_attempt_record_dict:
                     # new task, mark attempt = 1
                     task_attempt_record_dict[jediTaskID] = 1

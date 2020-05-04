@@ -51,6 +51,7 @@ class TaskAttempt(object):
     """
 
     __slots__ = [
+            '_is_complete',
             'jediTaskID',
             'attemptNr',
             'keyName',
@@ -61,6 +62,18 @@ class TaskAttempt(object):
             'finalStatus',
             'statusList',
         ]
+
+    def __str__(self):
+        ret = (f'TaskAttempt('
+                    f'taskid={self.jediTaskID}, '
+                    f'atmpt={self.attemptNr}, '
+                    f'start="{self.startTime}", '
+                    f'end="{self.endTime}", '
+                    f'dur="{self.attemptDuration}", '
+                    f'status={self.finalStatus}, '
+                    f'user="{self.userName}")'
+                    )
+        return ret
 
     def __init__(self, jediTaskID, attemptNr, startTime,
                     endTime=None, finalStatus=None, statusList=None, userName=None):

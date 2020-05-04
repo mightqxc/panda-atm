@@ -5,7 +5,6 @@ import datetime
 import copy
 import json
 import pickle
-import shelve
 import dbm
 import csv
 import threading
@@ -16,10 +15,10 @@ import numpy as np
 from pandacommon.pandalogger import logger_utils
 
 from pandaatm.atmconfig import atm_config
-from pandaatm.atmcore import core_utils
+from pandaatm.atmcore.core_utils import SQLiteProxy
 from pandaatm.atmbody.agent_base import AgentBase
 from pandaatm.atmutils.generic_utils import get_task_attempt_key_name, get_taskid_atmptn, update_set_by_change_tuple
-from pandaatm.atmutils.slow_task_analyzer_utils import get_total_jobs_run_core_time, get_tasks_users_in_each_duration
+from pandaatm.atmutils.slow_task_analyzer_utils import get_tasks_users_in_each_duration
 
 
 # parameters
@@ -39,11 +38,97 @@ one_second = datetime.timedelta(seconds=1)
 # global varibles
 global_dict = {
         'agent': None,
+        'jobspecs_db': None,
         '_running_slots_ts': np.array([]),
         '_running_slots_value': np.array([]),
         '_n_users_ts_period': np.array([]),
         '_n_users_value': np.array([]),
     }
+
+
+# jobspecs db class
+class JobspecsDB(object):
+
+    def __init__(self, readonly=False):
+        self.filename = global_dict['jobspecs_db']
+        self.readonly = readonly
+        if not self.readonly:
+            self.initialize()
+        self.open()
+
+    # initialize jobspecs db (create tables etc)
+    def initialize(self):
+        create_table_sql = (
+                'CREATE TABLE IF NOT EXISTS JobTable ('
+                    'PandaID INTEGER NOT NULL PRIMARY KEY, '
+                    'jediTaskID INTEGER NOT NULL, '
+                    'attemptNr INTEGER NOT NULL, '
+                    'userName TEXT, '
+                    'jobStatus TEXT, '
+                    'actualCoreCount INTEGER, '
+                    'creationTime TIMESTAMP, '
+                    'startTime TIMESTAMP, '
+                    'endTime TIMESTAMP'
+                    ')'
+            )
+        create_index_sql = (
+                'CREATE INDEX idx_{column} '
+                'ON JobTable({column}) '
+            )
+        index_column_list = ['jediTaskID', 'userName', 'creationTime']
+        jdb = SQLiteProxy(self.filename)
+        with jdb.get_write_proxy() as proxy:
+            proxy.execute(create_table_sql)
+            for column in index_column_list:
+                proxy.execute(create_index_sql.format(column=column))
+        jdb.close()
+
+    # open jobspecs db
+    def open(self):
+        jdb = SQLiteProxy(self.filename, self.readonly)
+        self.db = jdb
+
+    # insert data into jobspecs db
+    def insert(jobspec, userName, attemptNr):
+        insert_sql = (
+            'INSERT INTO JobTable ('
+                'PandaID, jediTaskID, attemptNr, '
+                'userName, jobStatus, actualCoreCount, '
+                'creationTime, startTime, endTime) '
+            'VALUES ('
+            ':PandaID, :jediTaskID, :attemptNr, '
+            ':userName, :jobStatus, :actualCoreCount, '
+            ':creationTime, :startTime, :endTime) '
+            )
+        varMap = {
+                ':PandaID': jobspec.PandaID,
+                ':jediTaskID': jobspec.jediTaskID,
+                ':attemptNr': attemptNr,
+                ':userName': userName,
+                ':jobStatus': jobspec.jobStatus,
+                ':actualCoreCount': jobspec.actualCoreCount,
+                ':creationTime': jobspec.creationTime,
+                ':startTime': jobspec.startTime,
+                ':endTime': jobspec.endTime,
+            }
+        self.db.cur.execute(insert_sql, varMap)
+
+    # read data as a list of jobspecs
+    def read_jobspecs(userName):
+        read_sql = (
+            'SELECT '
+                'PandaID, jediTaskID, attemptNr, '
+                'userName, jobStatus, actualCoreCount, '
+                'creationTime, startTime, endTime '
+            'FROM JobTable '
+            'WHERE userName=:userName'
+            )
+        varMap = {
+                ':userName': userName,
+            }
+        self.db.cur.execute(read_sql, varMap)
+        ret_list = self.db.cur.fetchall()
+        return ret_list
 
 # get history of running slots, csv from grafana plot
 def init_running_slots_history(running_slots_history_csv):
@@ -145,40 +230,44 @@ def main():
         n_tasks_in_duration_list, task_attempt_change_in_duration_list,
         n_users_in_duration_list, user_name_change_in_duration_list) = res_tasks_users
     print('handed all task attempts')
-    # use shelve to store jobspecs
-    task_jobspecs_shelve_file = '{0}-task_jobspecs.shelve'.format(checkpoint_file_prefix)
+    # use sqlite to store jobspecs
+    task_jobspecs_db_file = '{0}-task_jobspecs.db'.format(checkpoint_file_prefix)
+    global_dict['jobspecs_db'] = task_jobspecs_db_file
+    init_jobspecs_db()
     try:
-        # open shelve to read
-        task_jobspecs_shelve = shelve.open(task_jobspecs_shelve_file, flag='r', writeback=True)
-    except dbm.error:
+        # open jobspecs db to read
+        task_jobspecs_db_read = JobspecsDB(readonly=True)
+    except sqlite3.OperationalError:
+        # jobspecs db not existing
         # get db proxy
         if global_dict['agent'] is None:
             global_dict['agent'] = AgentBase()
         agent = global_dict['agent']
-        # new shelve to write
-        task_jobspecs_shelve = shelve.open(task_jobspecs_shelve_file, flag='c', writeback=False)
-        # function to handle one task
-        def _handle_one_task(item):
+        # new jobspecs db to write
+        task_jobspecs_db_write = JobspecsDB()
+        # function to handle one task attempt
+        def _handle_one_task_attempt(item):
             # start
-            k, v = item
-            jediTaskID, attemptNr = k
+            key, task_attempt = item
+            jediTaskID, attemptNr = key
             key_name = get_task_attempt_key_name(jediTaskID, attemptNr)
             # get jobs
             with agent.dbProxyPool.get() as proxy:
                 jobspec_list = proxy.slowTaskJobsInAttempt_ATM( jediTaskID=jediTaskID, attemptNr=attemptNr,
-                                                                attempt_start=v.startTime, attempt_end=v.endTime,
+                                                                attempt_start=task_attempt.startTime,
+                                                                attempt_end=task_attempt.endTime,
                                                                 concise=True)
-            # store into shelve
-            with global_lock:
-                task_jobspecs_shelve[key_name] = jobspec_list
+            # store into jobspecs db
+            for jobspec in jobspec_list:
+                task_jobspecs_db_write.insert(jobspec, task_attempt.userName, task_attempt.attemptNr)
         # parallel run with multithreading
         with ThreadPoolExecutor(4) as thread_pool:
-            thread_pool.map(_handle_one_task, all_task_attempts_dict.items())
-        # close shelve
-        task_jobspecs_shelve.close()
-        del task_jobspecs_shelve
-        # open shelve to read
-        task_jobspecs_shelve = shelve.open(task_jobspecs_shelve_file, flag='r', writeback=True)
+            thread_pool.map(_handle_one_task_attempt, all_task_attempts_dict.items())
+        # close jobspecs db
+        task_jobspecs_db_write.db.close()
+        del task_jobspecs_db_write
+        # open jobspecs db to read
+        task_jobspecs_db_read = JobspecsDB(readonly=True)
     print('got all jobspecs')
     # initialize functions of running_slots_history and n_users_history
     init_running_slots_history(running_slots_history_csv)
@@ -214,6 +303,8 @@ def main():
                 'total_jobs': 0,
                 'total_task_attempts': v['n_task_attempts'],
                 'total_taskful_time': datetime.timedelta(),
+                'total_run_core_time': datetime.timedelta(),
+                'total_successful_run_core_time': datetime.timedelta(),
                 'total_run_time': datetime.timedelta(),
                 'total_successful_run_time': datetime.timedelta(),
             }
@@ -227,47 +318,26 @@ def main():
         for user_name in tmp_user_set:
             user_run_wait_map[user_name]['total_taskful_time'] += duration
     print('computed taskful time for all users')
-    # # run time (weighted by cores_per_user) of jobs of the task attempt
-    # for user_name, v in all_users_tasks_dict.items():
-    #     # initialize for the user
-    #     jobs_matrix_list = []
-    #     finished_jobs_matrix_list = []
-    #     jobs_run_sec = 0
-    #     finished_jobs_run_sec = 0
-    #     # all task attempts of this user
-    #     for key in v['task_attempts']:
-    #         key_name = get_task_attempt_key_name(*key)
-    #         # all jobs in this task attempt
-    #         jobspec_list = task_jobspecs_shelve[key_name]
-    #         # fill numpy matrix for running period of all jobs
-    #         for jobspec in jobspec_list:
-    #             user_run_wait_map[user_name]['total_jobs'] += 1
-    #             if jobspec.startTime in (None, 'NULL'):
-    #                 continue
-    #             one_job_slots_list = []
-    #             for ts in duration_ts_list:
-    #                 if ts >= jobspec.startTime and ts < jobspec.endTime:
-    #                     one_job_slots_list.append(jobspec.actualCoreCount)
-    #                 else:
-    #                     one_job_slots_list.append(0)
-    #             jobs_matrix_list.append(one_job_slots_list)
-    #             if jobspec.jobStatus == 'finished':
-    #                 finished_jobs_matrix_list.append(one_job_slots_list)
-    #     # compute run time (by integration?!) with numpy matrix
-    #     if jobs_matrix_list:
-    #         jobs_matrix = np.array(jobs_matrix_list)
-    #         # sum to get run time
-    #         jobs_run_sec_array = np.dot(jobs_matrix, multiplier_array)
-    #         jobs_run_sec = np.sum(jobs_run_sec_array)
-    #     if finished_jobs_matrix_list:
-    #         finished_jobs_matrix = np.array(finished_jobs_matrix_list)
-    #         # sum to get successful run time
-    #         finished_jobs_run_sec_array = np.dot(finished_jobs_matrix, multiplier_array)
-    #         finished_jobs_run_sec = np.sum(finished_jobs_run_sec_array)
-    #     # aggregate run time in map
-    #     user_run_wait_map[user_name]['total_run_time'] += jobs_run_sec*one_second
-    #     user_run_wait_map[user_name]['total_successful_run_time'] += finished_jobs_run_sec*one_second
-    # print('computed run time for all users')
+
+
+
+    # fill number and run core time of jobs of users
+    for user_name in all_users_tasks_dict:
+        the_jobs = task_jobspecs_db_read.read_jobspecs(userName=user_name)
+        for PandaID, jediTaskID, attemptNr, \
+                userName, jobStatus, actualCoreCount, \
+                creationTime, startTime, endTime in the_jobs:
+            if startTime in (None, 'NULL'):
+                run_duration = datetime.timedelta()
+            else:
+                start_time = max(startTime, creationTime)
+                run_duration = endTime - start_time
+            run_core_time = run_duration*actualCoreCount if actualCoreCount not in (None, 'NULL') else datetime.timedelta()
+            user_run_wait_map[user_name]['total_jobs'] += 1
+            user_run_wait_map[user_name]['total_run_core_time'] += run_core_time
+            if jobStatus == 'finished':
+                user_run_wait_map[user_name]['total_successful_run_core_time'] += successful_run_core_time
+
 
     # run time (weighted by cores_per_user) of jobs of the task attempt
     n_periods = len(duration_list)
@@ -289,34 +359,33 @@ def main():
             duration_ts_list.append(tmp_ts)
             tmp_ts += one_second
         duration_ts_array = np.array(duration_ts_list)
+        n_users_array = n_users_func(duration_ts_array)
+        running_slots_array = running_slots_func(duration_ts_array)
         # array of multipler (n_users / total_slots)
-        multipler_array = n_users_func(duration_ts_array) / running_slots_func(duration_ts_array)
+        multipler_array = n_users_array / running_slots_array
         # all task attempts in this duration
         # for key in tmp_key_set:
-        def _handle_one_user_task_attempt(key):
-            key_name = get_task_attempt_key_name(*key)
-            # user of this task attempt
-            user_name = all_task_attempts_dict[key].userName
-            # all jobs in this task attempt
-            jobspec_list = task_jobspecs_shelve[key_name]
+        def _handle_one_user_in_period(user_name):
+            # fill jobspec list of the user
+            the_jobs = task_jobspecs_db_read.read_jobspecs(userName=user_name)
             # numpy matrix for running period of all jobs
             jobs_matrix_list = []
             finished_jobs_matrix_list = []
             jobs_run_sec = 0
             finished_jobs_run_sec = 0
-            for jobspec in jobspec_list:
-                with global_lock:
-                    user_run_wait_map[user_name]['total_jobs'] += 1
-                if jobspec.startTime in (None, 'NULL'):
+            for PandaID, jediTaskID, attemptNr, \
+                    userName, jobStatus, actualCoreCount, \
+                    creationTime, startTime, endTime in the_jobs:
+                if startTime in (None, 'NULL'):
                     continue
                 one_job_slots_list = []
                 for ts in duration_ts_list:
-                    if ts >= jobspec.startTime and ts < jobspec.endTime:
-                        one_job_slots_list.append(jobspec.actualCoreCount)
+                    if ts >= startTime and ts < endTime:
+                        one_job_slots_list.append(actualCoreCount)
                     else:
                         one_job_slots_list.append(0)
                 jobs_matrix_list.append(one_job_slots_list)
-                if jobspec.jobStatus == 'finished':
+                if jobStatus == 'finished':
                     finished_jobs_matrix_list.append(one_job_slots_list)
             if jobs_matrix_list:
                 jobs_matrix = np.array(jobs_matrix_list)
@@ -332,9 +401,9 @@ def main():
             with global_lock:
                 user_run_wait_map[user_name]['total_run_time'] += jobs_run_sec*one_second
                 user_run_wait_map[user_name]['total_successful_run_time'] += finished_jobs_run_sec*one_second
-        # parallel run with multithreading, meant to save time blocked by shelve read pickle
+        # parallel run with multithreading
         with ThreadPoolExecutor(8) as thread_pool:
-            thread_pool.map(_handle_one_user_task_attempt, tmp_key_set)
+            thread_pool.map(_handle_one_user_in_period, tmp_key_set)
         # aggregate taskful time in map
         for user_name in tmp_user_set:
             user_run_wait_map[user_name]['total_taskful_time'] += duration
@@ -356,8 +425,8 @@ def main():
             'total_wait_proportion': total_wait_proportion,
             })
     print('obatained full run-wait information of all users')
-    # close shelve
-    task_jobspecs_shelve.close()
+    # close jobspecs db
+    task_jobspecs_db_read.db.close()
     # print
     # print(user_run_wait_map)
     # pickle

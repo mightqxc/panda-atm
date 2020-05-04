@@ -23,7 +23,12 @@ class JobChroniclePoint(object):
         return self.timestamp == other.timestamp
 
     def __str__(self):
-        ret = f'(ts={self.timestamp}, pandaid={self.PandaID}, type={self.type}, status={self.jobStatus})'
+        ret = (f'JobChroniclePoint('
+                f'ts={self.timestamp}, '
+                f'pandaid={self.PandaID}, '
+                f'type={self.type}, '
+                f'status={self.jobStatus})'
+                )
         return ret
 
     def __init__(self, **kwargs):
@@ -49,7 +54,13 @@ class TaskChroniclePoint(object):
         return self.timestamp == other.timestamp
 
     def __str__(self):
-        ret = f'(ts={self.timestamp}, taskid={self.jediTaskID}, atmpt={self.attemptNr}, type={self.type}, status={self.status})'
+        ret = (f'TaskChroniclePoint('
+                f'ts={self.timestamp}, '
+                f'taskid={self.jediTaskID}, '
+                f'atmpt={self.attemptNr}, '
+                f'type={self.type}, '
+                f'status={self.status})'
+                )
         return ret
 
     def __init__(self, **kwargs):
@@ -245,8 +256,9 @@ def get_total_jobs_run_core_time(jobspec_list):
     successful_run_core_time = datetime.timedelta()
     for jobspec in jobspec_list:
         wait_duration, run_duration = get_job_durations(jobspec)
-        core_time = run_duration*jobspec.actualCoreCount
-        run_core_time += core_time
+        if run_duration and jobspec.actualCoreCount not in (None, 'NULL'):
+            core_time = run_duration*jobspec.actualCoreCount
+            run_core_time += core_time
         if jobspec.jobStatus == 'finished':
             successful_run_core_time += core_time
     return run_core_time, successful_run_core_time
@@ -373,7 +385,7 @@ def get_tasks_users_in_each_duration(all_task_attempts_dict):
             # from previous point
             key = (previous_point.jediTaskID, previous_point.attemptNr)
             cptype = previous_point.type
-            user_name = all_task_attempts_dict[key]['userName']
+            user_name = all_task_attempts_dict[key].userName
             if cptype == 'startTime':
                 # record the increment by this task attemp and user in this duration
                 task_attempt_change_in_duration_list.append(get_change_of_set(task_record_set, key, '+'))
