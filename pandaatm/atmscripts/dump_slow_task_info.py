@@ -27,14 +27,14 @@ def main():
     agent = AgentBase()
     # start
     print('start')
-    cand_ret_dict = agent.dbProxy.slowTaskAttempsFilter01_ATM(created_since=created_since, prod_source_label=None, task_duration=task_duration)
+    cand_ret_dict = agent.dbProxy.slowTaskAttemptsFilter01_ATM(created_since=created_since, prod_source_label=None, task_duration=task_duration)
     ret_dict = {}
     # function to handle one task
     def _handle_one_task(item):
         # start
         k, v = item
         jediTaskID, attemptNr = k
-        task_attempt_name = '{0}_{1:02}'.format(*k)
+        key_name = '{0}_{1:02}'.format(*k)
         new_v = copy.deepcopy(v)
         # get a dbProxy
         tmp_dbProxy = agent.dbProxyPool.getProxy()

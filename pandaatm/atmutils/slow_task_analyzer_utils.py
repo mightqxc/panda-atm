@@ -300,7 +300,7 @@ def get_task_attempts_in_each_duration(task_attempt_dict):
             # compute number of task attempts in this duration
             n_total_task_attempts = len(task_record_set)
             n_tasks_in_duration_list.append(n_total_task_attempts)
-            # record all task attemps in this duration
+            # record all task attempts in this duration
             task_attempts_in_duration_list.append(set(task_record_set))
         # prepare for next loop
         previous_point = chronicle_point
@@ -333,10 +333,10 @@ def get_tasks_users_in_each_duration(all_task_attempts_dict):
     """
     # get chronicle points of the jobs and sort in time order
     chronicle_point_list = []
-    for k, v in all_task_attempts_dict.items():
-        jediTaskID, attemptNr = k
+    for key, task_attempt in all_task_attempts_dict.items():
+        jediTaskID, attemptNr = key
         for attr in ['startTime', 'endTime']:
-            timestamp = v[attr]
+            timestamp = getattr(task_attempt, attr)
             if timestamp in (None, 'NULL'):
                 continue
             chronicle_point = TaskChroniclePoint(
@@ -344,7 +344,7 @@ def get_tasks_users_in_each_duration(all_task_attempts_dict):
                                     type=attr,
                                     jediTaskID=jediTaskID,
                                     attemptNr=attemptNr,
-                                    status=v['finalStatus'],
+                                    status=task_attempt.finalStatus,
                                 )
             chronicle_point_list.append(chronicle_point)
     chronicle_point_list.sort()

@@ -38,7 +38,7 @@ def main():
         with open(cand_ret_dict_file, 'rb') as _f:
             cand_ret_dict = pickle.load(_f)
     except FileNotFoundError:
-        cand_ret_dict = agent.dbProxy.slowTaskAttempsFilter01_ATM(
+        cand_ret_dict = agent.dbProxy.slowTaskAttemptsFilter01_ATM(
                                             created_since=created_since,
                                             created_before=created_before,
                                             prod_source_label=prod_source_label,
@@ -50,13 +50,13 @@ def main():
     # global lock
     global_lock = threading.Lock()
     # task attempts by user
-    user_task_attemps_map = {}
+    user_task_attempts_map = {}
     # function to handle one task
     def _handle_one_task(item):
         # start
         k, v = item
         jediTaskID, attemptNr = k
-        task_attempt_name = '{0}_{1:02}'.format(*k)
+        key_name = '{0}_{1:02}'.format(*k)
         new_v = copy.deepcopy(v)
         attempt_duration = v['attemptDuration']
         user_name = v['userName']
@@ -78,25 +78,25 @@ def main():
         del jobspec_list
         # put into map
         with global_lock:
-            if user_name in user_task_attemps_map:
-                user_task_attemps_map[user_name].update({k: new_v})
+            if user_name in user_task_attempts_map:
+                user_task_attempts_map[user_name].update({k: new_v})
             else:
-                user_task_attemps_map[user_name] = {k: new_v}
+                user_task_attempts_map[user_name] = {k: new_v}
     # checkpoint file
-    user_task_attemps_map_file = '/tmp/user_run_wait-user_task_attemps_map.pickle'
+    user_task_attempts_map_file = '/tmp/user_run_wait-user_task_attempts_map.pickle'
     try:
-        with open(user_task_attemps_map_file, 'rb') as _f:
-            user_task_attemps_map = pickle.load(_f)
+        with open(user_task_attempts_map_file, 'rb') as _f:
+            user_task_attempts_map = pickle.load(_f)
     except FileNotFoundError:
         # parallel run with multithreading
         with ThreadPoolExecutor(4) as thread_pool:
             result_iter = thread_pool.map(_handle_one_task, cand_ret_dict.items())
         # pickle for checkpoint
-        with open(user_task_attemps_map_file, 'wb') as _f:
-            pickle.dump(user_task_attemps_map, _f)
+        with open(user_task_attempts_map_file, 'wb') as _f:
+            pickle.dump(user_task_attempts_map, _f)
     # help to release memory
     del cand_ret_dict
-    # function to handle task attemps for one user (handle overlap)
+    # function to handle task attempts for one user (handle overlap)
     def _handle_one_user(item):
         user_name, task_attempt_dict = item
         (   duration_list,
@@ -138,7 +138,7 @@ def main():
     # compute run-wait for users
     user_run_wait_map = {}
     with ThreadPoolExecutor(4) as thread_pool:
-        result_iter = thread_pool.map(_handle_one_user, user_task_attemps_map.items())
+        result_iter = thread_pool.map(_handle_one_user, user_task_attempts_map.items())
     user_run_wait_map.update(result_iter)
     # print
     # print(user_run_wait_map)

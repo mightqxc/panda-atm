@@ -291,17 +291,17 @@ class SlowTaskAnalyzer(AgentBase):
                                     jobMaxHoursMap=self.jobMaxHoursMap,
                                 )
                 dump_file.write(dump_str)
-                # candidate slow task attemps
-                tmp_log.debug('fetching candidate slow task attemps created since {0} hours ago'.format(self.sinceHours))
+                # candidate slow task attempts
+                tmp_log.debug('fetching candidate slow task attempts created since {0} hours ago'.format(self.sinceHours))
                 created_since = datetime.datetime.utcnow() - datetime.timedelta(hours=self.sinceHours)
                 task_duration = datetime.timedelta(hours=self.taskDurationMaxHours)
-                cand_ret_dict = self.dbProxy.slowTaskAttempsFilter01_ATM(created_since=created_since, prod_source_label=None, task_duration=task_duration)
-                # filter to get slow task attemps
-                tmp_log.debug('filtering slow task attemps')
+                cand_ret_dict = self.dbProxy.slowTaskAttemptsFilter01_ATM(created_since=created_since, prod_source_label=None, task_duration=task_duration)
+                # filter to get slow task attempts
+                tmp_log.debug('filtering slow task attempts')
                 ret_dict = {}
                 for k, v in cand_ret_dict.items():
                     jediTaskID, attemptNr = k
-                    task_attempt_name = '{0}_{1:02}'.format(*k)
+                    key_name = '{0}_{1:02}'.format(*k)
                     new_v = copy.deepcopy(v)
                     jobspec_list = self.dbProxy.slowTaskJobsInAttempt_ATM(jediTaskID=jediTaskID, attemptNr=attemptNr,
                                                                         attempt_start=v['startTime'], attempt_end=v['endTime'])
@@ -319,9 +319,9 @@ class SlowTaskAnalyzer(AgentBase):
                     if successful_run_time_ratio*100 < self.taskSuccefulRunTimeMinPercent:
                         # successful run time occupied too little percentage of task duration
                         ret_dict[k] = new_v
-                        tmp_log.debug('got a slow task attempt {0}'.format(task_attempt_name))
+                        tmp_log.debug('got a slow task attempt {0}'.format(key_name))
                 n_slow_task_attempts = len(ret_dict)
-                dump_str = 'got {0} slow task attemps: \n{1}\n'.format(n_slow_task_attempts, self._slow_task_attempts_display(ret_dict))
+                dump_str = 'got {0} slow task attempts: \n{1}\n'.format(n_slow_task_attempts, self._slow_task_attempts_display(ret_dict))
                 dump_file.write(dump_str)
                 tmp_log.debug(dump_str)
                 # get culprits of slow task attempts
@@ -332,7 +332,7 @@ class SlowTaskAnalyzer(AgentBase):
                     jediTaskID, attemptNr = k
                     dump_str = 'About jediTaskID={0} , attemptNr={1} \n\n'.format(jediTaskID, attemptNr)
                     dump_file.write(dump_str)
-                    task_attempt_name = '{0}_{1:02}'.format(*k)
+                    key_name = '{0}_{1:02}'.format(*k)
                     new_v = ret_dict[k]
                     slow_reason_set = set()
                     task_attempt_duration = new_v['attemptDuration']
@@ -343,10 +343,10 @@ class SlowTaskAnalyzer(AgentBase):
                     n_long_status = len(long_status_log_list)
                     bad_status_str = ','.join(sorted({ x['status'] for x in long_status_log_list }))
                     if n_long_status == 0:
-                        tmp_log.debug('taskID_attempt={0} got 0 long status'.format(task_attempt_name))
+                        tmp_log.debug('taskID_attempt={0} got 0 long status'.format(key_name))
                     else:
                         long_status_display_str = self._long_status_display(long_status_log_list)
-                        dump_str = 'taskID_attempt={0} got {1} long status: \n{2}\n\n\n'.format(task_attempt_name, n_long_status, long_status_display_str)
+                        dump_str = 'taskID_attempt={0} got {1} long status: \n{2}\n\n\n'.format(key_name, n_long_status, long_status_display_str)
                         dump_file.write(dump_str)
                         tmp_log.debug(dump_str)
                         slow_reason_set.add('TaskStatusLong')
@@ -354,25 +354,25 @@ class SlowTaskAnalyzer(AgentBase):
                     bad_interval_list = self._search_bad_intervals(jobspec_list, new_v['startTime'])
                     n_bad_intervals = len(bad_interval_list)
                     if n_bad_intervals == 0:
-                        tmp_log.debug('taskID_attempt={0} got 0 culprit intervals'.format(task_attempt_name))
+                        tmp_log.debug('taskID_attempt={0} got 0 culprit intervals'.format(key_name))
                     else:
                         bad_intervals_display_str = self._bad_intervals_display(bad_interval_list)
                         slow_reason_set.add('JoblessIntervalLong')
-                        dump_str = 'taskID_attempt={0} got {1} culprit intervals: \n{2}\n\n\n'.format(task_attempt_name, n_bad_intervals, bad_intervals_display_str)
+                        dump_str = 'taskID_attempt={0} got {1} culprit intervals: \n{2}\n\n\n'.format(key_name, n_bad_intervals, bad_intervals_display_str)
                         dump_file.write(dump_str)
                         tmp_log.debug(dump_str)
                     # time consumption statistics of jobs
                     jobs_time_consumption_stats_display = self._jobs_time_consumption_stats_display(task_attempt_duration, jobs_time_consumption_stats_dict)
-                    dump_str = 'taskID_attempt={0} time consumption stats of jobs: \n{1}\n'.format(task_attempt_name, jobs_time_consumption_stats_display)
+                    dump_str = 'taskID_attempt={0} time consumption stats of jobs: \n{1}\n'.format(key_name, jobs_time_consumption_stats_display)
                     dump_file.write(dump_str)
                     tmp_log.debug(dump_str)
                     # job symptom tags according to time consumption
                     job_slow_reason_set = self._bad_job_time_consumed_set(task_attempt_duration, jobs_time_consumption_stats_dict)
                     if not job_slow_reason_set:
-                        tmp_log.debug('taskID_attempt={0} had no bad job symptom'.format(task_attempt_name))
+                        tmp_log.debug('taskID_attempt={0} had no bad job symptom'.format(key_name))
                     else:
                         slow_reason_set |= job_slow_reason_set
-                        dump_str = 'taskID_attempt={0} got bad job symptoms: {1}\n\n'.format(task_attempt_name, ','.join(sorted(job_slow_reason_set)))
+                        dump_str = 'taskID_attempt={0} got bad job symptoms: {1}\n\n'.format(key_name, ','.join(sorted(job_slow_reason_set)))
                         dump_file.write(dump_str)
                         tmp_log.debug(dump_str)
                     # find some bad jobs as hint
@@ -398,10 +398,10 @@ class SlowTaskAnalyzer(AgentBase):
                                 err_info_dict[err_info]['priority'] = job_attr_dict['priority']
                     n_bad_jobs = len(pandaid_list)
                     if n_bad_jobs == 0:
-                        tmp_log.debug('taskID_attempt={0} got 0 bad jobs'.format(task_attempt_name))
+                        tmp_log.debug('taskID_attempt={0} got 0 bad jobs'.format(key_name))
                     else:
                         bad_jobs_display_str = self._bad_jobs_display(pandaid_list, err_info_dict)
-                        dump_str = 'taskID_attempt={0} got {1} bad jobs: \n{2}\n\n'.format(task_attempt_name, n_bad_jobs, bad_jobs_display_str)
+                        dump_str = 'taskID_attempt={0} got {1} bad jobs: \n{2}\n\n'.format(key_name, n_bad_jobs, bad_jobs_display_str)
                         dump_file.write(dump_str)
                         tmp_log.debug(dump_str)
                     # additional information about bad jobs
@@ -413,12 +413,12 @@ class SlowTaskAnalyzer(AgentBase):
                     #         msg = '{0}: {1}'.format(symptom_tag, retMsg)
                     #         additional_bad_job_info_msg_list.append(msg)
                     # if additional_bad_job_info_msg_list:
-                    #     dump_str = 'taskID_attempt={0} additional info of culprit jobs: \n{1}\n\n\n'.format(task_attempt_name, '\n'.join(additional_bad_job_info_msg_list))
+                    #     dump_str = 'taskID_attempt={0} additional info of culprit jobs: \n{1}\n\n\n'.format(key_name, '\n'.join(additional_bad_job_info_msg_list))
                     #     dump_file.write(dump_str)
                     #     tmp_log.debug(dump_str)
                     # summary of analysis of a task attempt
-                    culprit_summary_str = 'taskID_attempt={task_attempt_name} slow reason: {slow_reasons}'.format(
-                                                task_attempt_name=task_attempt_name,
+                    culprit_summary_str = 'taskID_attempt={key_name} slow reason: {slow_reasons}'.format(
+                                                key_name=key_name,
                                                 slow_reasons=' '.join(sorted(slow_reason_set)),
                                              )
                     tmp_log.info(culprit_summary_str)
