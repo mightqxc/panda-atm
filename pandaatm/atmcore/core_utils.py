@@ -33,7 +33,7 @@ class SQLiteProxy(object):
     def _connect(self):
         self.con = sqlite3.connect( self.db_file,
                                     detect_types=(sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES),
-                                    check_same_thread=True)
+                                    check_same_thread=False)
         self.cur = self.con.cursor()
 
     def _connect_readonly(self):
@@ -50,11 +50,7 @@ class SQLiteProxy(object):
         else:
             self._connect()
 
-    def get_read_proxy(self):
-        proxy_obj = SQLiteProxyObj(proxy=self)
-        return proxy_obj
-
-    def get_write_proxy(self):
+    def get_proxy(self):
         proxy_obj = SQLiteProxyObj(proxy=self, to_lock=True)
         return proxy_obj
 
@@ -64,7 +60,7 @@ class SQLiteProxy(object):
             self.con.close()
 
 
-# object of context manager for sqlite proxy for commit and lock
+# object of context manager for sqlite proxy for lock
 class SQLiteProxyObj(object):
 
     def __init__(self, proxy, to_lock=False):
@@ -73,7 +69,7 @@ class SQLiteProxyObj(object):
 
     def __enter__(self):
         if self.to_lock:
-            self.proxy.lock.aquire()
+            self.proxy.lock.acquire()
         return self.proxy.cur
 
     def __exit__(self, type, value, traceback):
