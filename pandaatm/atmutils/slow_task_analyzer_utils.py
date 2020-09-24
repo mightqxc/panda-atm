@@ -93,6 +93,10 @@ def get_jobs_time_consumption_statistics(jobspec_list):
     # get chronicle points of the jobs and sort in time order
     chronicle_point_list = []
     for jobspec in jobspec_list:
+        # skip very strange jobs with endTime < creationTime
+        if jobspec.endTime < jobspec.creationTime:
+            print('strange job pandaid={0} has endTime < creationTime'.format(jobspec.PandaID))
+            continue
         for attr in ['creationTime', 'startTime', 'endTime']:
             timestamp = getattr(jobspec, attr)
             if timestamp in (None, 'NULL'):

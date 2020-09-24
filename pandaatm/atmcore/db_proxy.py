@@ -121,6 +121,7 @@ class DBProxy(OraDBProxy.DBProxy):
             varMap[':creationDateMin'] = created_since
             created_before_filter = ''
             gshare_filter = ''
+            task_duration_filter = ''
             if created_before is not None:
                 varMap[':creationDateMax'] = created_before
                 created_before_filter = 'AND creationDate<:creationDateMax'
@@ -131,7 +132,8 @@ class DBProxy(OraDBProxy.DBProxy):
                 varMap[':taskDurationMax'] = task_duration
                 task_duration_filter = 'AND (CAST(endTime AS TIMESTAMP) - creationDate) >:taskDurationMax '
             sqlT = sqlT.format( created_before_filter=created_before_filter,
-                                gshare_filter=gshare_filter)
+                                gshare_filter=gshare_filter,
+                                task_duration_filter=task_duration_filter)
             self.cur.execute(sqlT + comment, varMap)
             tmpTasksRes = self.cur.fetchall()
             tmp_log.debug('got tasks to parse')
@@ -275,7 +277,7 @@ class DBProxy(OraDBProxy.DBProxy):
         try:
             if concise:
                 important_attrs = [ 'PandaID', 'jediTaskID', 'jobStatus', 'actualCoreCount',
-                                    'creationTime', 'startTime', 'endTime']
+                                    'creationTime', 'startTime', 'endTime', 'computingSite']
                 job_columns = ','.join(important_attrs)
             else:
                 job_columns = str(JobSpec.columnNames())
