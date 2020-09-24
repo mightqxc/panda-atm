@@ -16,8 +16,13 @@ from pandaatm.atmutils.slow_task_analyzer_utils import get_job_durations, get_jo
 
 
 # parameters
-created_since = datetime.datetime.utcnow() - datetime.timedelta(days=21)
+ts_now = datetime.datetime.utcnow()
+created_since = ts_now - datetime.timedelta(days=21)
+created_before = ts_now
+# created_since = datetime.datetime(2020, 9, 1)
+# created_before = datetime.datetime(2020, 9, 15)
 task_duration = datetime.timedelta(hours=120)
+prod_source_label = 'user'
 
 
 # main
@@ -27,7 +32,10 @@ def main():
     agent = AgentBase()
     # start
     print('start')
-    cand_ret_dict = agent.dbProxy.slowTaskAttemptsFilter01_ATM(created_since=created_since, prod_source_label=None, task_duration=task_duration)
+    cand_ret_dict = agent.dbProxy.slowTaskAttemptsFilter01_ATM( created_since=created_since,
+                                                                created_before=created_before,
+                                                                prod_source_label=prod_source_label,
+                                                                task_duration=task_duration)
     ret_dict = {}
     # function to handle one task
     def _handle_one_task(item):
@@ -44,14 +52,13 @@ def main():
         # put back dbProxy
         agent.dbProxyPool.putProxy(tmp_dbProxy)
         # time consumption statistics of jobs
-        task_attempt_duration = v['endTime'] - v['startTime']
+        task_attempt_duration = v['attemptDuration']
         jobs_time_consumption_stats_dict = get_jobs_time_consumption_statistics(jobspec_list)
         jobful_time_ratio = jobs_time_consumption_stats_dict['total']['total'] / task_attempt_duration
         successful_run_time_ratio = jobs_time_consumption_stats_dict['finished']['run'] / task_attempt_duration
         jobs_time_consumption_stats_dict['_jobful_time_ratio'] = jobful_time_ratio
         jobs_time_consumption_stats_dict['_successful_run_time_ratio'] = successful_run_time_ratio
         # fill new value dictionary
-        new_v['task_attempt_duration'] = task_attempt_duration
         new_v['jobs_time_consumption_stats_dict'] = jobs_time_consumption_stats_dict
         # help to release memory
         del jobspec_list

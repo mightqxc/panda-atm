@@ -22,14 +22,19 @@ from pandaatm.atmutils.slow_task_analyzer_utils import get_tasks_users_in_each_d
 
 
 # parameters
-checkpoint_file_prefix = os.path.join('/tmp', 'user_run_wait_in_range')
-range_start = datetime.datetime(2020, 4, 10, 0, 0, 0)
-range_end = datetime.datetime(2020, 4, 24, 0, 0, 0)
-record_created_since = datetime.datetime(2020, 4, 3, 0, 0, 0)
-record_created_before = datetime.datetime(2020, 5, 1, 0, 0, 0)
+checkpoint_file_prefix = os.path.join('/tmp', 'user_run_wait_in_range_0522_0605')
+range_start = datetime.datetime(2020, 5, 22, 0, 0, 0)
+range_end = datetime.datetime(2020, 6, 5, 0, 0, 0)
+record_created_since = datetime.datetime(2020, 5, 16, 0, 0, 0)
+record_created_before = datetime.datetime(2020, 6, 7, 0, 0, 0)
+# checkpoint_file_prefix = os.path.join('/tmp', 'user_run_wait_in_range')
+# range_start = datetime.datetime(2020, 4, 10, 0, 0, 0)
+# range_end = datetime.datetime(2020, 4, 24, 0, 0, 0)
+# record_created_since = datetime.datetime(2020, 4, 3, 0, 0, 0)
+# record_created_before = datetime.datetime(2020, 5, 1, 0, 0, 0)
 prod_source_label = 'user'
 gshare = 'User Analysis'
-running_slots_history_csv = '/tmp/user_run_wait_adv_running_slots_history.csv'
+running_slots_history_csv = '/tmp/user_run_wait_adv_running_slots_history_0516_0607.csv'
 
 
 # internal constants
@@ -70,7 +75,8 @@ class JobspecsDB(object):
                     'actualCoreCount INTEGER, '
                     'creationTime TIMESTAMP, '
                     'startTime TIMESTAMP, '
-                    'endTime TIMESTAMP'
+                    'endTime TIMESTAMP, '
+                    'computingSite TEXT'
                     ')'
             )
         create_index_sql = (
@@ -100,11 +106,13 @@ class JobspecsDB(object):
             'INSERT OR IGNORE INTO JobTable ('
                 'PandaID, jediTaskID, attemptNr, '
                 'userName, jobStatus, actualCoreCount, '
-                'creationTime, startTime, endTime) '
+                'creationTime, startTime, endTime, '
+                'computingSite) '
             'VALUES ('
             ':PandaID, :jediTaskID, :attemptNr, '
             ':userName, :jobStatus, :actualCoreCount, '
-            ':creationTime, :startTime, :endTime) '
+            ':creationTime, :startTime, :endTime, '
+            ':computingSite) '
             )
         with self.db.get_proxy() as proxy:
             for jobspec in jobspec_list:
@@ -118,6 +126,7 @@ class JobspecsDB(object):
                         'creationTime': jobspec.creationTime,
                         'startTime': jobspec.startTime if jobspec.startTime not in (None, 'NULL') else None,
                         'endTime': jobspec.endTime,
+                        'computingSite': jobspec.computingSite,
                     }
                 proxy.execute(insert_sql, varMap)
 
@@ -127,7 +136,8 @@ class JobspecsDB(object):
             'SELECT '
                 'PandaID, jediTaskID, attemptNr, '
                 'userName, jobStatus, actualCoreCount, '
-                'creationTime, startTime, endTime '
+                'creationTime, startTime, endTime, '
+                'computingSite '
             'FROM JobTable '
             'WHERE 1 '
             '{userName_filter} '
@@ -286,18 +296,23 @@ def main():
         agent = global_dict['agent']
         # function to handle one task attempt
         def _handle_one_task_attempt(item):
-            # start
-            key, task_attempt = item
-            jediTaskID, attemptNr = key
-            key_name = get_task_attempt_key_name(jediTaskID, attemptNr)
-            # get jobs
-            with agent.dbProxyPool.get() as proxy:
-                jobspec_list = proxy.slowTaskJobsInAttempt_ATM( jediTaskID=jediTaskID, attemptNr=attemptNr,
-                                                                attempt_start=task_attempt.startTime,
-                                                                attempt_end=task_attempt.endTime,
-                                                                concise=True)
-            # store into jobspecs db
-            task_jobspecs_db_write.insert(jobspec_list, task_attempt.userName, task_attempt.attemptNr)
+            try:
+                # start
+                key, task_attempt = item
+                jediTaskID, attemptNr = key
+                key_name = get_task_attempt_key_name(jediTaskID, attemptNr)
+                # get jobs
+                with agent.dbProxyPool.get() as proxy:
+                    jobspec_list = proxy.slowTaskJobsInAttempt_ATM( jediTaskID=jediTaskID, attemptNr=attemptNr,
+                                                                    attempt_start=task_attempt.startTime,
+                                                                    attempt_end=task_attempt.endTime,
+                                                                    concise=True)
+                # store into jobspecs db
+                task_jobspecs_db_write.insert(jobspec_list, task_attempt.userName, task_attempt.attemptNr)
+            except Exception as e:
+                sys.stderr.write('_handle_one_task_attempt , {0}: {1}\n'.format(e.__class__.__name__, e))
+                sys.stderr.flush()
+                raise
         # parallel run with multithreading
         with ThreadPoolExecutor(4) as thread_pool:
             thread_pool.map(_handle_one_task_attempt, concerned_task_attempts_dict.items())
@@ -355,6 +370,8 @@ def main():
                 'total_taskful_time': datetime.timedelta(),
                 'total_run_core_time': datetime.timedelta(),
                 'total_successful_run_core_time': datetime.timedelta(),
+                'run_core_time_on_sites': {},
+                'successful_run_core_time_on_sites': {},
                 'total_run_time': datetime.timedelta(),
                 'total_successful_run_time': datetime.timedelta(),
             }
@@ -385,12 +402,13 @@ def main():
     print('computed taskful time for all users')
 
 
-    # fill number and run core time of jobs of users
+    # fill number and run core time of jobs of users. Also, catogorize by sites
     for user_name in all_users_tasks_dict:
         the_jobs = task_jobspecs_db_read.read_jobspecs(userName=user_name)
         for PandaID, jediTaskID, attemptNr, \
                 userName, jobStatus, actualCoreCount, \
-                creationTime, startTime, endTime in the_jobs:
+                creationTime, startTime, endTime, \
+                computingSite in the_jobs:
             if creationTime > range_end or endTime < range_start:
                 # job not in range
                 continue
@@ -413,128 +431,139 @@ def main():
             with global_lock:
                 user_run_wait_map[user_name]['total_run_jobs'] += 1
                 user_run_wait_map[user_name]['total_run_core_time'] += run_core_time
+                if computingSite in user_run_wait_map[user_name]['run_core_time_on_sites']:
+                    user_run_wait_map[user_name]['run_core_time_on_sites'][computingSite] += run_core_time
+                else:
+                    user_run_wait_map[user_name]['run_core_time_on_sites'][computingSite] = run_core_time
                 if jobStatus == 'finished':
                     user_run_wait_map[user_name]['total_successful_run_jobs'] += 1
                     user_run_wait_map[user_name]['total_successful_run_core_time'] += run_core_time
+                    if computingSite in user_run_wait_map[user_name]['successful_run_core_time_on_sites']:
+                        user_run_wait_map[user_name]['successful_run_core_time_on_sites'][computingSite] += run_core_time
+                    else:
+                        user_run_wait_map[user_name]['successful_run_core_time_on_sites'][computingSite] = run_core_time
     print('computed run core time for all users')
     with open('{0}.preweighted'.format(dump_file), 'wb') as _f:
         pickle.dump(user_run_wait_map, _f)
 
-
-    # run time (weighted by cores_per_user) of jobs of the task attempt
-    n_periods = len(duration_list)
-    tmp_key_set = set()
-    tmp_user_set = set()
-    nth_period = 0
-    nth_period_in_range = 0
-    for period, duration, n_task_attempts, key_change, n_users, user_change in zip(*res_tasks_users):
-        nth_period += 1
-        # edges of the period
-        period_start, period_end = period
-        # update temporary sets
-        update_set_by_change_tuple(tmp_key_set, key_change)
-        update_set_by_change_tuple(tmp_user_set, user_change)
-        # skip if period out of range
-        if period_start > range_end or period_end < range_start:
-            continue
-        # skip if no task attempt
-        if n_task_attempts == 0:
-            continue
-        # in-range period
-        nth_period_in_range += 1
-        # array of every second within the duration
-        duration_ts_list = []
-        tmp_ts = period_start
-        while tmp_ts < period_end:
-            duration_ts_list.append(tmp_ts)
-            tmp_ts += one_second
-        duration_ts_array = np.array(duration_ts_list)
-        n_users_array = n_users_func(duration_ts_array)
-        running_slots_array = running_slots_func(duration_ts_array)
-        # array of multiplier (n_users / total_slots)
-        multiplier_array = n_users_array / running_slots_array
-        # reshape
-        multiplier_array = multiplier_array.reshape(-1, 1)
-        # all task attempts in this duration
-        # for key in tmp_key_set:
-        def _handle_one_user_in_period(user_name):
-            try:
-                # fill jobspec list of the user
-                the_jobs = task_jobspecs_db_read.read_jobspecs( userName=user_name,
-                                                                startTimeMax=period_end,
-                                                                endTimeMin=period_start,
-                                                                )
-                # numpy matrix for running period of all jobs
-                jobs_matrix_list = []
-                finished_jobs_matrix_list = []
-                jobs_run_sec = 0
-                finished_jobs_run_sec = 0
-                for PandaID, jediTaskID, attemptNr, \
-                        userName, jobStatus, actualCoreCount, \
-                        creationTime, startTime, endTime in the_jobs:
-                    if startTime in (None, 'NULL') or actualCoreCount in (None, 'NULL'):
-                        continue
-                    one_job_slots_list = []
-                    for ts in duration_ts_list:
-                        if ts > range_end or ts < range_start:
-                            # outside the range
-                            one_job_slots_list.append(0)
-                        elif ts >= startTime and ts < endTime:
-                            # covered by job run time
-                            one_job_slots_list.append(actualCoreCount)
-                        else:
-                            one_job_slots_list.append(0)
-                    jobs_matrix_list.append(one_job_slots_list)
-                    if jobStatus == 'finished':
-                        finished_jobs_matrix_list.append(one_job_slots_list)
-                if jobs_matrix_list:
-                    jobs_matrix = np.array(jobs_matrix_list)
-                    # sum to get run time
-                    jobs_run_sec_array = np.dot(jobs_matrix, multiplier_array)
-                    jobs_run_sec = np.sum(jobs_run_sec_array)
-                if finished_jobs_matrix_list:
-                    finished_jobs_matrix = np.array(finished_jobs_matrix_list)
-                    # sum to get successful run time
-                    finished_jobs_run_sec_array = np.dot(finished_jobs_matrix, multiplier_array)
-                    finished_jobs_run_sec = np.sum(finished_jobs_run_sec_array)
-                # aggregate run time in map
-                with global_lock:
-                    user_run_wait_map[user_name]['total_run_time'] += jobs_run_sec*one_second
-                    user_run_wait_map[user_name]['total_successful_run_time'] += finished_jobs_run_sec*one_second
-            except Exception as e:
-                print('_handle_one_user_in_period , ', e.__class__.__name__, e)
-                raise
-        # parallel run with multithreading
-        with ThreadPoolExecutor(4) as thread_pool:
-            thread_pool.map(_handle_one_user_in_period, tmp_user_set)
-        print('computed weighted run time in a period: {0}/{1} ; {2} periods in range'.format(nth_period, n_periods, nth_period_in_range))
-    print('computed weighted run time for all users')
-
-
-    # compute remaining values
-    for user_name in all_users_tasks_dict:
-        v = user_run_wait_map[user_name]
-        total_wait_time = v['total_taskful_time'] - v['total_run_time']
-        total_run_proportion = v['total_run_time']/v['total_taskful_time']
-        total_successful_run_proportion = v['total_successful_run_time']/v['total_taskful_time']
-        total_wait_proportion = total_wait_time/v['total_taskful_time']
-        v.update({
-            'total_wait_time': total_wait_time,
-            'total_run_proportion': total_run_proportion,
-            'total_successful_run_proportion': total_successful_run_proportion,
-            'total_wait_proportion': total_wait_proportion,
-            })
-    print('obatained full run-wait information of all users')
-    # close jobspecs db
-    task_jobspecs_db_read.close()
+    # FIXME: for more accurate calculation. Not needed in most cases
+    if False:
+        # run time (weighted by cores_per_user) of jobs of the task attempt
+        n_periods = len(duration_list)
+        tmp_key_set = set()
+        tmp_user_set = set()
+        nth_period = 0
+        nth_period_in_range = 0
+        for period, duration, n_task_attempts, key_change, n_users, user_change in zip(*res_tasks_users):
+            nth_period += 1
+            # edges of the period
+            period_start, period_end = period
+            # update temporary sets
+            update_set_by_change_tuple(tmp_key_set, key_change)
+            update_set_by_change_tuple(tmp_user_set, user_change)
+            # skip if period out of range
+            if period_start > range_end or period_end < range_start:
+                continue
+            # skip if no task attempt
+            if n_task_attempts == 0:
+                continue
+            # in-range period
+            nth_period_in_range += 1
+            # array of every second within the duration
+            duration_ts_list = []
+            tmp_ts = period_start
+            while tmp_ts < period_end:
+                duration_ts_list.append(tmp_ts)
+                tmp_ts += one_second
+            duration_ts_array = np.array(duration_ts_list)
+            n_users_array = n_users_func(duration_ts_array)
+            running_slots_array = running_slots_func(duration_ts_array)
+            # array of multiplier (n_users / total_slots)
+            multiplier_array = n_users_array / running_slots_array
+            # reshape
+            multiplier_array = multiplier_array.reshape(-1, 1)
+            # all task attempts in this duration
+            # for key in tmp_key_set:
+            def _handle_one_user_in_period(user_name):
+                try:
+                    # fill jobspec list of the user
+                    the_jobs = task_jobspecs_db_read.read_jobspecs( userName=user_name,
+                                                                    startTimeMax=period_end,
+                                                                    endTimeMin=period_start,
+                                                                    )
+                    # numpy matrix for running period of all jobs
+                    jobs_matrix_list = []
+                    finished_jobs_matrix_list = []
+                    jobs_run_sec = 0
+                    finished_jobs_run_sec = 0
+                    for PandaID, jediTaskID, attemptNr, \
+                            userName, jobStatus, actualCoreCount, \
+                            creationTime, startTime, endTime, \
+                            computingSite in the_jobs:
+                        if startTime in (None, 'NULL') or actualCoreCount in (None, 'NULL'):
+                            continue
+                        one_job_slots_list = []
+                        for ts in duration_ts_list:
+                            if ts > range_end or ts < range_start:
+                                # outside the range
+                                one_job_slots_list.append(0)
+                            elif ts >= startTime and ts < endTime:
+                                # covered by job run time
+                                one_job_slots_list.append(actualCoreCount)
+                            else:
+                                one_job_slots_list.append(0)
+                        jobs_matrix_list.append(one_job_slots_list)
+                        if jobStatus == 'finished':
+                            finished_jobs_matrix_list.append(one_job_slots_list)
+                    if jobs_matrix_list:
+                        jobs_matrix = np.array(jobs_matrix_list)
+                        # sum to get run time
+                        jobs_run_sec_array = np.dot(jobs_matrix, multiplier_array)
+                        jobs_run_sec = np.sum(jobs_run_sec_array)
+                    if finished_jobs_matrix_list:
+                        finished_jobs_matrix = np.array(finished_jobs_matrix_list)
+                        # sum to get successful run time
+                        finished_jobs_run_sec_array = np.dot(finished_jobs_matrix, multiplier_array)
+                        finished_jobs_run_sec = np.sum(finished_jobs_run_sec_array)
+                    # aggregate run time in map
+                    with global_lock:
+                        user_run_wait_map[user_name]['total_run_time'] += jobs_run_sec*one_second
+                        user_run_wait_map[user_name]['total_successful_run_time'] += finished_jobs_run_sec*one_second
+                except Exception as e:
+                    sys.stderr.write('_handle_one_user_in_period , {0}: {1}\n'.format(e.__class__.__name__, e))
+                    sys.stderr.flush()
+                    raise
+            # parallel run with multithreading
+            with ThreadPoolExecutor(4) as thread_pool:
+                thread_pool.map(_handle_one_user_in_period, tmp_user_set)
+            print('computed weighted run time in a period: {0}/{1} ; {2} periods in range'.format(nth_period, n_periods, nth_period_in_range))
+        print('computed weighted run time for all users')
 
 
-    # print
-    # print(user_run_wait_map)
-    # pickle
-    with open(dump_file, 'wb') as _f:
-        pickle.dump(user_run_wait_map, _f)
-    print('done')
+        # compute remaining values
+        for user_name in all_users_tasks_dict:
+            v = user_run_wait_map[user_name]
+            total_wait_time = v['total_taskful_time'] - v['total_run_time']
+            total_run_proportion = v['total_run_time']/v['total_taskful_time']
+            total_successful_run_proportion = v['total_successful_run_time']/v['total_taskful_time']
+            total_wait_proportion = total_wait_time/v['total_taskful_time']
+            v.update({
+                'total_wait_time': total_wait_time,
+                'total_run_proportion': total_run_proportion,
+                'total_successful_run_proportion': total_successful_run_proportion,
+                'total_wait_proportion': total_wait_proportion,
+                })
+        print('obatained full run-wait information of all users')
+        # close jobspecs db
+        task_jobspecs_db_read.close()
+
+
+        # print
+        # print(user_run_wait_map)
+        # pickle
+        with open(dump_file, 'wb') as _f:
+            pickle.dump(user_run_wait_map, _f)
+        print('done')
 
 
 # run
