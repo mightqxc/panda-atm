@@ -1,11 +1,13 @@
 import datetime
 import copy
 
+from pandaatm.atmutils.generic_utils import get_change_of_set
+
 
 #=== classes ===================================================
 
 # job chronicle point class
-class ChroniclePoint(object):
+class JobChroniclePoint(object):
 
     __slots__ = [
             'timestamp',
@@ -21,7 +23,44 @@ class ChroniclePoint(object):
         return self.timestamp == other.timestamp
 
     def __str__(self):
-        ret = f'(ts={self.timestamp}, pandaid={self.PandaID}, type={self.type}, status={self.jobStatus})'
+        ret = (f'JobChroniclePoint('
+                f'ts={self.timestamp}, '
+                f'pandaid={self.PandaID}, '
+                f'type={self.type}, '
+                f'status={self.jobStatus})'
+                )
+        return ret
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+# task chronicle point class
+class TaskChroniclePoint(object):
+
+    __slots__ = [
+            'timestamp',
+            'type',
+            'jediTaskID',
+            'attemptNr',
+            'status',
+        ]
+
+    def __lt__(self, other):
+        return self.timestamp < other.timestamp
+
+    def __eq__(self, other):
+        return self.timestamp == other.timestamp
+
+    def __str__(self):
+        ret = (f'TaskChroniclePoint('
+                f'ts={self.timestamp}, '
+                f'taskid={self.jediTaskID}, '
+                f'atmpt={self.attemptNr}, '
+                f'type={self.type}, '
+                f'status={self.status})'
+                )
         return ret
 
     def __init__(self, **kwargs):
@@ -41,8 +80,10 @@ def get_job_durations(jobspec):
         wait_duration = jobspec.endTime - jobspec.creationTime
         run_duration = datetime.timedelta()
     else:
-        wait_duration = jobspec.startTime - jobspec.creationTime
-        run_duration = jobspec.endTime - jobspec.startTime
+        # in case some strange jobs with startTime < creationTime
+        start_time = max(jobspec.startTime, jobspec.creationTime)
+        wait_duration = start_time - jobspec.creationTime
+        run_duration = jobspec.endTime - start_time
     return wait_duration, run_duration
 
 def get_jobs_time_consumption_statistics(jobspec_list):
@@ -52,11 +93,15 @@ def get_jobs_time_consumption_statistics(jobspec_list):
     # get chronicle points of the jobs and sort in time order
     chronicle_point_list = []
     for jobspec in jobspec_list:
+        # skip very strange jobs with endTime < creationTime
+        if jobspec.endTime < jobspec.creationTime:
+            print('strange job pandaid={0} has endTime < creationTime'.format(jobspec.PandaID))
+            continue
         for attr in ['creationTime', 'startTime', 'endTime']:
             timestamp = getattr(jobspec, attr)
             if timestamp in (None, 'NULL'):
                 continue
-            chronicle_point = ChroniclePoint(
+            chronicle_point = JobChroniclePoint(
                                     timestamp=timestamp,
                                     type=attr,
                                     PandaID=jobspec.PandaID,
@@ -175,20 +220,21 @@ def get_jobs_time_consumption_statistics(jobspec_list):
         # prepare for next loop
         previous_point = chronicle_point
     # handle after last loop
-    _status = previous_point.jobStatus
-    _pandaid = previous_point.PandaID
-    _cptype = previous_point.type
-    if _cptype == 'creationTime':
-        # job waiting in this duration
-        jobs_record_dict[_status]['wait'].add(_pandaid)
-    elif _cptype == 'startTime':
-        # job running in this duration
-        jobs_record_dict[_status]['wait'].discard(_pandaid)
-        jobs_record_dict[_status]['run'].add(_pandaid)
-    elif _cptype == 'endTime':
-        # job ended, clear from temp records
-        jobs_record_dict[_status]['wait'].discard(_pandaid)
-        jobs_record_dict[_status]['run'].discard(_pandaid)
+    if previous_point is not None:
+        _status = previous_point.jobStatus
+        _pandaid = previous_point.PandaID
+        _cptype = previous_point.type
+        if _cptype == 'creationTime':
+            # job waiting in this duration
+            jobs_record_dict[_status]['wait'].add(_pandaid)
+        elif _cptype == 'startTime':
+            # job running in this duration
+            jobs_record_dict[_status]['wait'].discard(_pandaid)
+            jobs_record_dict[_status]['run'].add(_pandaid)
+        elif _cptype == 'endTime':
+            # job ended, clear from temp records
+            jobs_record_dict[_status]['wait'].discard(_pandaid)
+            jobs_record_dict[_status]['run'].discard(_pandaid)
     # check
     n_durations = len(duration_list)
     for _status in ['finished', 'failed', 'closed', 'cancelled']:
@@ -205,6 +251,221 @@ def get_jobs_time_consumption_statistics(jobspec_list):
     summary_dict = copy.deepcopy(time_consumption_stats_dict)
     # return
     return summary_dict
+
+def get_total_jobs_run_core_time(jobspec_list):
+    """
+    get sum of run core time (~ cputime) and only successful one of all jobs
+    """
+    run_core_time = datetime.timedelta()
+    successful_run_core_time = datetime.timedelta()
+    for jobspec in jobspec_list:
+        wait_duration, run_duration = get_job_durations(jobspec)
+        if run_duration and jobspec.actualCoreCount not in (None, 'NULL'):
+            core_time = run_duration*jobspec.actualCoreCount
+            run_core_time += core_time
+        if jobspec.jobStatus == 'finished':
+            successful_run_core_time += core_time
+    return run_core_time, successful_run_core_time
+
+def get_task_attempts_in_each_duration(task_attempt_dict):
+    """
+    get a tuple of lists task attempts in each (non-overlap) duration
+    """
+    # get chronicle points of the jobs and sort in time order
+    chronicle_point_list = []
+    for k, v in task_attempt_dict.items():
+        jediTaskID, attemptNr = k
+        for attr in ['startTime', 'endTime']:
+            timestamp = v[attr]
+            if timestamp in (None, 'NULL'):
+                continue
+            chronicle_point = TaskChroniclePoint(
+                                    timestamp=timestamp,
+                                    type=attr,
+                                    jediTaskID=jediTaskID,
+                                    attemptNr=attemptNr,
+                                    status=v['finalStatus'],
+                                )
+            chronicle_point_list.append(chronicle_point)
+    chronicle_point_list.sort()
+    # initialization
+    duration_list = []
+    n_tasks_in_duration_list = []
+    task_attempts_in_duration_list = []
+    task_record_set = set()
+    previous_point = None
+    # loop over chronicle points
+    for chronicle_point in chronicle_point_list:
+        if previous_point is not None:
+            # duration
+            duration = chronicle_point.timestamp - previous_point.timestamp
+            # record duration
+            duration_list.append(duration)
+            # from previous point
+            key = (previous_point.jediTaskID, previous_point.attemptNr)
+            cptype = previous_point.type
+            if cptype == 'startTime':
+                # task attempt in this duration
+                task_record_set.add(key)
+            elif cptype == 'endTime':
+                # task attempt ended, clear from temp records
+                task_record_set.discard(key)
+            else:
+                # should not happen
+                raise RuntimeError('Bad type of chronicle point: {0}'.format(cptype))
+            # compute number of task attempts in this duration
+            n_total_task_attempts = len(task_record_set)
+            n_tasks_in_duration_list.append(n_total_task_attempts)
+            # record all task attempts in this duration
+            task_attempts_in_duration_list.append(set(task_record_set))
+        # prepare for next loop
+        previous_point = chronicle_point
+    # handle after last loop
+    if previous_point is not None:
+        _key = (previous_point.jediTaskID, previous_point.attemptNr)
+        _cptype = previous_point.type
+        if _cptype == 'startTime':
+            # task attempt in this duration
+            task_record_set.add(_key)
+        elif _cptype == 'endTime':
+            # task attempt ended, clear from temp records
+            task_record_set.discard(_key)
+    # check
+    n_durations = len(duration_list)
+    # with task attempt left over; should not happen
+    if len(task_record_set) > 0:
+        raise RuntimeError('still some task attempts left over: {0}'.format(task_record_set))
+    # differnt number of records; should not happen
+    n_tasks_records = len(n_tasks_in_duration_list)
+    if n_tasks_records != n_durations:
+        raise RuntimeError('numbers of task attempt duration records do not match: {0} != {1}'.format(
+                                                                                    n_tasks_records, n_durations))
+    # return
+    return duration_list, n_tasks_in_duration_list, task_attempts_in_duration_list
+
+def get_tasks_users_in_each_duration(all_task_attempts_dict):
+    """
+    get a tuple of lists task attempts and user in each (non-overlap) duration
+    """
+    # get chronicle points of the jobs and sort in time order
+    chronicle_point_list = []
+    for key, task_attempt in all_task_attempts_dict.items():
+        jediTaskID, attemptNr = key
+        for attr in ['startTime', 'endTime']:
+            timestamp = getattr(task_attempt, attr)
+            if timestamp in (None, 'NULL'):
+                continue
+            chronicle_point = TaskChroniclePoint(
+                                    timestamp=timestamp,
+                                    type=attr,
+                                    jediTaskID=jediTaskID,
+                                    attemptNr=attemptNr,
+                                    status=task_attempt.finalStatus,
+                                )
+            chronicle_point_list.append(chronicle_point)
+    chronicle_point_list.sort()
+    # period list
+    period_list = []
+    if chronicle_point_list:
+        for j in range(len(chronicle_point_list) - 1):
+            period_list.append((chronicle_point_list[j].timestamp,
+                                chronicle_point_list[j+1].timestamp))
+    # initialization
+    duration_list = []
+    n_tasks_in_duration_list = []
+    n_users_in_duration_list = []
+    task_attempt_change_in_duration_list = []
+    user_name_change_in_duration_list = []
+    user_taskful_time_dict = {}
+    task_record_set = set()
+    user_record_dict = {}
+    user_record_set = set()
+    previous_point = None
+    # loop over chronicle points
+    for chronicle_point in chronicle_point_list + [None]:
+        if previous_point is not None:
+            if chronicle_point is not None:
+                # duration
+                duration = chronicle_point.timestamp - previous_point.timestamp
+                # record duration
+                duration_list.append(duration)
+            # from previous point
+            key = (previous_point.jediTaskID, previous_point.attemptNr)
+            cptype = previous_point.type
+            user_name = all_task_attempts_dict[key].userName
+            if cptype == 'startTime':
+                # record the increment by this task attempt and user in this duration
+                if chronicle_point is not None:
+                    task_attempt_change_in_duration_list.append(get_change_of_set(task_record_set, key, '+'))
+                    user_name_change_in_duration_list.append(get_change_of_set(user_record_set, user_name, '+'))
+                # task attempt in this duration
+                task_record_set.add(key)
+                # task increase of the user
+                if user_name in user_record_dict:
+                    user_record_dict[user_name] += 1
+                else:
+                    user_record_dict[user_name] = 1
+                # user in this duration
+                user_record_set.add(user_name)
+            elif cptype == 'endTime':
+                # record the decrement by this task attempt in this duration
+                # note, cannot remove the user directly since they may have other tasks ongoing
+                if chronicle_point is not None:
+                    task_attempt_change_in_duration_list.append(get_change_of_set(task_record_set, key, '-'))
+                # task attempt ended, clear from temp records
+                task_record_set.discard(key)
+                # check if user has no task in this duration:
+                if user_name not in user_record_dict:
+                    # should not happen
+                    raise RuntimeError('Found task ending without starting: {0} {1} "{2}"'.format(key, cptype, user_name))
+                # task decrease of the user
+                user_record_dict[user_name] -= 1
+                if user_record_dict[user_name] < 0:
+                    # should not happen
+                    raise RuntimeError('Found possible task ending without starting: {0} {1} "{2}"'.format(key, cptype, user_name))
+                if user_record_dict[user_name] == 0:
+                    # user has no task in this duration
+                    if chronicle_point is not None:
+                        user_name_change_in_duration_list.append(get_change_of_set(user_record_set, user_name, '-'))
+                    user_record_set.discard(user_name)
+                else:
+                    # user has some tasks in this duration
+                    if chronicle_point is not None:
+                        user_name_change_in_duration_list.append(get_change_of_set(user_record_set, user_name, None))
+            else:
+                # should not happen
+                raise RuntimeError('Bad type of chronicle point: {0}'.format(cptype))
+            # number of task attempts and users in this duration
+            if chronicle_point is not None:
+                n_total_task_attempts = len(task_record_set)
+                n_total_users = len(user_record_set)
+                n_tasks_in_duration_list.append(n_total_task_attempts)
+                n_users_in_duration_list.append(n_total_users)
+        # prepare for next loop
+        if chronicle_point is not None:
+            previous_point = chronicle_point
+    # check
+    n_durations = len(duration_list)
+    # with task attempt left over; should not happen
+    if len(task_record_set) > 0:
+        raise RuntimeError('still some task attempts left over: {0}'.format(task_record_set))
+    # differnt number of records; should not happen
+    n_tasks_records = len(n_tasks_in_duration_list)
+    n_task_attempt_change = len(task_attempt_change_in_duration_list)
+    n_user_name_change = len(user_name_change_in_duration_list)
+    if n_tasks_records != n_durations:
+        raise RuntimeError('numbers of task attempt duration records do not match: n_tasks_records {0} != {1}'.format(
+                                                                                    n_tasks_records, n_durations))
+    if n_task_attempt_change != n_durations:
+        raise RuntimeError('numbers of task attempt duration records do not match: n_task_attempt_change {0} != {1}'.format(
+                                                                                    n_task_attempt_change, n_durations))
+    if n_user_name_change != n_durations:
+        raise RuntimeError('numbers of task attempt duration records do not match: n_user_name_change {0} != {1}'.format(
+                                                                                    n_user_name_change, n_durations))
+    # return
+    return (period_list, duration_list,
+            n_tasks_in_duration_list, task_attempt_change_in_duration_list,
+            n_users_in_duration_list, user_name_change_in_duration_list)
 
 
 #=== test functions of bad jobs ===============================
