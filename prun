@@ -1,1 +1,10 @@
-fake prun executable
+cwlVersion: v1.2
+
+class: CommandLineTool
+
+baseCommand: echo
+
+inputs:
+  opt_inDS:
+    type: string
+
