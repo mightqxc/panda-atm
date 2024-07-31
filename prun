@@ -4,9 +4,7 @@ class: CommandLineTool
 
 baseCommand: echo
 
-inputs:
-  opt_inDS:
-    type: string
+inputs: []
 
 outputs:
   outDS:
