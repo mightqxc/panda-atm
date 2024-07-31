@@ -8,3 +8,6 @@ inputs:
   opt_inDS:
     type: string
 
+outputs:
+  outDS:
+    type: string
