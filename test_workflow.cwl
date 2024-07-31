@@ -1,8 +1,7 @@
-cwlVersion: v1.2
-class: Workflow
+#!/usr/bin/env cwl-runner
+cwlVersion: v1.0
 
-requirements:
-  MultipleInputFeatureRequirement: {}
+class: Workflow
 
 inputs:
   signal: string
@@ -90,10 +89,3 @@ steps:
       opt_args:
         default: "--outputs aaa.root --secondaryDSs IN2:2:%{SECDS1},IN3:5:%{SECDS2}"
     out: [outDS]
-
-~                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-~                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-~                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-~                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-~                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-~                                  
